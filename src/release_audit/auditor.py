@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .findings import Finding
 from .hash_utils import calculate_sha3_512
@@ -21,6 +21,7 @@ class AuditReport:
     canonical_findings: list[Finding]
     noncanonical_findings: list[Finding]
     finding_scope_errors: list[Finding]
+    unmanifested_findings: list[Finding]
 
 
 class ReleaseAuditor:
@@ -65,15 +66,17 @@ class ReleaseAuditor:
         canonical_findings = []
         noncanonical_findings = []
         finding_scope_errors = []
+        unmanifested_findings = []
 
         for finding in findings:
             normalized_path = self._normalize_path(finding.file_path)
             manifest_scope = manifest_scopes.get(normalized_path)
 
-            if (
-                manifest_scope is not None
-                and manifest_scope != finding.scope
-            ):
+            if manifest_scope is None:
+                unmanifested_findings.append(finding)
+                continue
+
+            if manifest_scope != finding.scope:
                 finding_scope_errors.append(finding)
                 continue
 
@@ -87,6 +90,7 @@ class ReleaseAuditor:
             canonical_findings=canonical_findings,
             noncanonical_findings=noncanonical_findings,
             finding_scope_errors=finding_scope_errors,
+            unmanifested_findings=unmanifested_findings,
         )
 
     def _validate_duplicates(
@@ -195,6 +199,8 @@ class ReleaseAuditor:
 
     @staticmethod
     def _normalize_path(file_path: str) -> str:
-        """Normalize path separators for consistent manifest comparisons."""
+        """Normalize path separators and equivalent relative path forms."""
 
-        return file_path.replace("\\", "/").strip()
+        normalized = file_path.replace("\\", "/").strip()
+
+        return PurePosixPath(normalized).as_posix()

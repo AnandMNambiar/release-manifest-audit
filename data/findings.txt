@@ -1,4 +1,4 @@
-# Synthetic findings for demonstration
+# Synthetic findings
 
-canonical/app.py|MEDIUM|Example canonical finding
-noncanonical/experiment.py|LOW|Example noncanonical finding
+canonical/app.py|canonical|MEDIUM|Example canonical finding
+noncanonical/experiment.py|noncanonical|LOW|Example noncanonical finding

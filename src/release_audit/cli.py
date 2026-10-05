@@ -85,14 +85,44 @@ def main():
     else:
         print("- None")
 
+    if report.finding_scope_errors:
+        print()
+        print("Finding scope errors:")
+
+        for finding in report.finding_scope_errors:
+            print(
+                f"- [{finding.severity}] "
+                f"{finding.file_path}: "
+                "Finding scope conflicts with the manifest scope"
+            )
+
+    if report.unmanifested_findings:
+        print()
+        print("Unmanifested findings:")
+
+        for finding in report.unmanifested_findings:
+            print(
+                f"- [{finding.severity}] "
+                f"{finding.file_path}: "
+                "Finding refers to a file that is not present in the manifest"
+            )
+
     print()
 
     failed_results = [
-        result for result in report.results
+        result
+        for result in report.results
         if result.status == "FAIL"
     ]
 
-    if failed_results:
+    has_scope_errors = bool(report.finding_scope_errors)
+    has_unmanifested_findings = bool(report.unmanifested_findings)
+
+    if (
+        failed_results
+        or has_scope_errors
+        or has_unmanifested_findings
+    ):
         print("AUDIT STATUS: FAILED")
         return 1
 

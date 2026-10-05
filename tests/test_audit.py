@@ -1,8 +1,10 @@
 from pathlib import Path
+import subprocess
+import sys
 
 from release_audit.auditor import ReleaseAuditor
 from release_audit.findings import Finding, parse_findings_file
-from release_audit.models import EntryType, ManifestEntry, Scope
+from release_audit.models import ManifestEntry, Scope
 from release_audit.parser import ManifestParser
 
 
@@ -170,6 +172,52 @@ def test_conflicting_duplicate_entries_fail(tmp_path):
         and result.message == "Conflicting duplicate manifest entry"
         for result in report.results
     )
+
+
+def test_equivalent_duplicate_paths_fail(tmp_path):
+    original_entry = load_entries()[0]
+
+    first_entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="canonical/app.py",
+        expected_hash=original_entry.expected_hash,
+    )
+
+    second_entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="canonical/./app.py",
+        expected_hash="different-hash",
+    )
+
+    report = ReleaseAuditor(tmp_path).audit(
+        [first_entry, second_entry]
+    )
+
+    assert any(
+        result.status == "FAIL"
+        and result.message == "Conflicting duplicate manifest entry"
+        for result in report.results
+    )
+
+
+def test_directory_used_as_file_fails(tmp_path):
+    directory = tmp_path / "app.py"
+    directory.mkdir()
+
+    original_entry = load_entries()[0]
+
+    entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="app.py",
+        expected_hash=original_entry.expected_hash,
+    )
+
+    report = ReleaseAuditor(tmp_path).audit([entry])
+
+    assert report.results[0].status == "FAIL"
+    assert report.results[0].message == "Path is not a file"
+
+
 def test_finding_scope_mismatch_is_detected():
     entries = load_entries()
 
@@ -187,3 +235,83 @@ def test_finding_scope_mismatch_is_detected():
     assert len(report.finding_scope_errors) == 1
     assert report.finding_scope_errors[0].file_path == "canonical/app.py"
 
+
+def test_cli_reports_scope_mismatch_and_fails(tmp_path):
+    findings_path = tmp_path / "findings_scope_mismatch.txt"
+
+    findings_path.write_text(
+        "canonical/app.py|noncanonical|HIGH|Incorrectly scoped finding\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "release_audit.cli",
+            "--manifest",
+            str(MANIFEST_PATH),
+            "--base-dir",
+            str(BASE_DIR),
+            "--findings",
+            str(findings_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**__import__("os").environ, "PYTHONPATH": "src"},
+    )
+
+    assert result.returncode == 1
+    assert "Finding scope errors:" in result.stdout
+    assert "AUDIT STATUS: FAILED" in result.stdout
+def test_unmanifested_finding_is_rejected():
+    entries = load_entries()
+
+    findings = [
+        Finding(
+            file_path="canonical/not_in_manifest.py",
+            scope=Scope.CANONICAL,
+            message="Finding for an unmanifested file",
+            severity="HIGH",
+        )
+    ]
+
+    report = ReleaseAuditor(BASE_DIR).audit(entries, findings)
+
+    assert len(report.unmanifested_findings) == 1
+    assert (
+        report.unmanifested_findings[0].file_path
+        == "canonical/not_in_manifest.py"
+    )
+
+    assert len(report.canonical_findings) == 0
+    assert len(report.noncanonical_findings) == 0
+def test_cli_reports_unmanifested_finding_and_fails(tmp_path):
+    findings_path = tmp_path / "findings_unmanifested.txt"
+
+    findings_path.write_text(
+        "canonical/not_in_manifest.py|canonical|HIGH|Finding for an unmanifested file\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "release_audit.cli",
+            "--manifest",
+            str(MANIFEST_PATH),
+            "--base-dir",
+            str(BASE_DIR),
+            "--findings",
+            str(findings_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**__import__("os").environ, "PYTHONPATH": "src"},
+    )
+
+    assert result.returncode == 1
+    assert "Unmanifested findings:" in result.stdout
+    assert "Finding refers to a file that is not present in the manifest" in result.stdout
+    assert "AUDIT STATUS: FAILED" in result.stdout
