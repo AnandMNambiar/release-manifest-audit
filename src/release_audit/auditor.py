@@ -20,13 +20,14 @@ class AuditReport:
     results: list[AuditResult]
     canonical_findings: list[Finding]
     noncanonical_findings: list[Finding]
+    finding_scope_errors: list[Finding]
 
 
 class ReleaseAuditor:
     """Verifies manifest entries and separates findings by audit scope."""
 
     def __init__(self, base_directory: Path):
-        self.base_directory = base_directory
+        self.base_directory = base_directory.resolve()
 
     def audit(
         self,
@@ -35,31 +36,104 @@ class ReleaseAuditor:
     ) -> AuditReport:
         results = []
 
-        for entry in entries:
-            results.append(self._audit_entry(entry))
+        if not entries:
+            results.append(
+                AuditResult(
+                    file_path="",
+                    scope=Scope.CANONICAL,
+                    entry_type="MANIFEST",
+                    status="FAIL",
+                    message="Manifest contains no entries",
+                )
+            )
+        else:
+            duplicate_errors = self._validate_duplicates(entries)
+
+            if duplicate_errors:
+                results.extend(duplicate_errors)
+            else:
+                for entry in entries:
+                    results.append(self._audit_entry(entry))
 
         findings = findings or []
 
-        canonical_findings = [
-            finding
-            for finding in findings
-            if finding.scope == Scope.CANONICAL
-        ]
+        manifest_scopes = {
+            self._normalize_path(entry.file_path): entry.scope
+            for entry in entries
+        }
 
-        noncanonical_findings = [
-            finding
-            for finding in findings
-            if finding.scope == Scope.NONCANONICAL
-        ]
+        canonical_findings = []
+        noncanonical_findings = []
+        finding_scope_errors = []
+
+        for finding in findings:
+            normalized_path = self._normalize_path(finding.file_path)
+            manifest_scope = manifest_scopes.get(normalized_path)
+
+            if (
+                manifest_scope is not None
+                and manifest_scope != finding.scope
+            ):
+                finding_scope_errors.append(finding)
+                continue
+
+            if finding.scope == Scope.CANONICAL:
+                canonical_findings.append(finding)
+            else:
+                noncanonical_findings.append(finding)
 
         return AuditReport(
             results=results,
             canonical_findings=canonical_findings,
             noncanonical_findings=noncanonical_findings,
+            finding_scope_errors=finding_scope_errors,
         )
 
+    def _validate_duplicates(
+        self,
+        entries: list[ManifestEntry],
+    ) -> list[AuditResult]:
+        """Reject conflicting duplicate manifest entries."""
+
+        seen: dict[str, ManifestEntry] = {}
+        results = []
+
+        for entry in entries:
+            normalized_path = self._normalize_path(entry.file_path)
+
+            if normalized_path in seen:
+                previous = seen[normalized_path]
+
+                if (
+                    previous.entry_type != entry.entry_type
+                    or previous.expected_hash.lower()
+                    != entry.expected_hash.lower()
+                ):
+                    results.append(
+                        AuditResult(
+                            file_path=entry.file_path,
+                            scope=entry.scope,
+                            entry_type=entry.entry_type.value,
+                            status="FAIL",
+                            message="Conflicting duplicate manifest entry",
+                        )
+                    )
+            else:
+                seen[normalized_path] = entry
+
+        return results
+
     def _audit_entry(self, entry: ManifestEntry) -> AuditResult:
-        file_path = self.base_directory / entry.file_path
+        file_path = self._resolve_safe_path(entry.file_path)
+
+        if file_path is None:
+            return AuditResult(
+                file_path=entry.file_path,
+                scope=entry.scope,
+                entry_type=entry.entry_type.value,
+                status="FAIL",
+                message="File path escapes the base directory",
+            )
 
         if not file_path.exists():
             return AuditResult(
@@ -70,7 +144,25 @@ class ReleaseAuditor:
                 message="File is missing",
             )
 
-        actual_hash = calculate_sha3_512(file_path)
+        if not file_path.is_file():
+            return AuditResult(
+                file_path=entry.file_path,
+                scope=entry.scope,
+                entry_type=entry.entry_type.value,
+                status="FAIL",
+                message="Path is not a file",
+            )
+
+        try:
+            actual_hash = calculate_sha3_512(file_path)
+        except OSError as error:
+            return AuditResult(
+                file_path=entry.file_path,
+                scope=entry.scope,
+                entry_type=entry.entry_type.value,
+                status="FAIL",
+                message=f"Unable to read file: {error}",
+            )
 
         if actual_hash.lower() != entry.expected_hash.lower():
             return AuditResult(
@@ -88,3 +180,21 @@ class ReleaseAuditor:
             status="PASS",
             message="File exists and SHA3-512 hash matches",
         )
+
+    def _resolve_safe_path(self, relative_path: str) -> Path | None:
+        """Resolve a manifest path and reject paths outside the base directory."""
+
+        candidate = (self.base_directory / relative_path).resolve()
+
+        try:
+            candidate.relative_to(self.base_directory)
+        except ValueError:
+            return None
+
+        return candidate
+
+    @staticmethod
+    def _normalize_path(file_path: str) -> str:
+        """Normalize path separators for consistent manifest comparisons."""
+
+        return file_path.replace("\\", "/").strip()

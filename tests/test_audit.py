@@ -2,7 +2,7 @@ from pathlib import Path
 
 from release_audit.auditor import ReleaseAuditor
 from release_audit.findings import Finding, parse_findings_file
-from release_audit.models import ManifestEntry, Scope
+from release_audit.models import EntryType, ManifestEntry, Scope
 from release_audit.parser import ManifestParser
 
 
@@ -111,3 +111,79 @@ def test_findings_file_is_parsed():
     assert findings[1].file_path == "noncanonical/experiment.py"
     assert findings[1].scope == Scope.NONCANONICAL
     assert findings[1].severity == "LOW"
+
+
+def test_empty_manifest_fails(tmp_path):
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("", encoding="utf-8")
+
+    entries = ManifestParser().parse_file(manifest)
+
+    report = ReleaseAuditor(tmp_path).audit(entries)
+
+    assert report.results[0].status == "FAIL"
+    assert report.results[0].message == "Manifest contains no entries"
+
+
+def test_path_traversal_is_rejected(tmp_path):
+    outside_file = tmp_path.parent / "outside.py"
+    outside_file.write_text("outside", encoding="utf-8")
+
+    original_entry = load_entries()[0]
+
+    entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="../outside.py",
+        expected_hash=original_entry.expected_hash,
+    )
+
+    report = ReleaseAuditor(tmp_path).audit([entry])
+
+    assert report.results[0].status == "FAIL"
+    assert (
+        report.results[0].message
+        == "File path escapes the base directory"
+    )
+
+
+def test_conflicting_duplicate_entries_fail(tmp_path):
+    original_entry = load_entries()[0]
+
+    first_entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="app.py",
+        expected_hash="hash-one",
+    )
+
+    second_entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="app.py",
+        expected_hash="hash-two",
+    )
+
+    report = ReleaseAuditor(tmp_path).audit(
+        [first_entry, second_entry]
+    )
+
+    assert any(
+        result.status == "FAIL"
+        and result.message == "Conflicting duplicate manifest entry"
+        for result in report.results
+    )
+def test_finding_scope_mismatch_is_detected():
+    entries = load_entries()
+
+    findings = [
+        Finding(
+            file_path="canonical/app.py",
+            scope=Scope.NONCANONICAL,
+            message="Incorrectly scoped finding",
+            severity="HIGH",
+        )
+    ]
+
+    report = ReleaseAuditor(BASE_DIR).audit(entries, findings)
+
+    assert len(report.finding_scope_errors) == 1
+    assert report.finding_scope_errors[0].file_path == "canonical/app.py"
+
