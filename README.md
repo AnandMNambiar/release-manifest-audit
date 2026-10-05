@@ -51,7 +51,7 @@ release-manifest-audit/
 │
 └── tests/
     └── test_audit.py
-```text
+```
 
 
 ## Requirements
