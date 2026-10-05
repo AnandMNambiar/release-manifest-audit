@@ -1,208 +1,259 @@
 # Release Manifest Audit
 
-A small standalone Python prototype for verifying release-manifest integrity using SHA3-512 hashes and separating audit findings into canonical and noncanonical scopes.
+A small standalone Python prototype for deterministic release-manifest auditing.
 
-## Overview
+The auditor reads a release manifest, verifies SHA3-512 hashes for referenced files, classifies entries into canonical and noncanonical audit scopes, and validates that findings remain consistent with the manifest.
 
-The prototype reads a synthetic release manifest containing:
+## Architecture Overview
 
-- `SOURCE` entries
-- `VERIFICATION` entries
-- `EVIDENCE` entries
+The prototype is organized into a few focused components:
 
-Each manifest entry contains a file path and an expected SHA3-512 hash.
+- Manifest Parser — Parses SOURCE, VERIFICATION, and EVIDENCE entries from the release manifest.
+- Hash Verification — Calculates SHA3-512 hashes and compares them with the expected manifest values.
+- Release Auditor — Performs manifest validation, safe path resolution, duplicate detection, file validation, hash verification, and finding-scope validation.
+- Findings Parser — Reads synthetic findings and assigns their explicitly declared audit scope.
+- CLI — Runs the audit and reports the final pass/fail status.
+- Tests — Covers manifest classification, verification failures, path validation, duplicate entries, findings, and CLI behavior.
 
-The auditor:
+The implementation is deterministic and does not require an LLM or external service.
 
-1. Parses the manifest.
-2. Classifies entries into canonical or noncanonical scope.
-3. Checks whether the referenced path stays within the configured base directory.
-4. Checks whether the referenced path exists and is a file.
-5. Calculates its SHA3-512 hash.
-6. Compares the actual hash with the manifest.
-7. Detects conflicting duplicate manifest entries.
-8. Rejects an empty manifest.
-9. Separates findings by audit scope.
-10. Detects findings whose scope conflicts with the corresponding manifest entry.
-
-For this prototype, `SOURCE` and `VERIFICATION` entries are treated as canonical, while `EVIDENCE` entries are treated as noncanonical. This is the synthetic scope convention used by the prototype.
 ## Project Structure
 
-```text
-release-manifest-audit/
-├── .gitattributes
-├── data/
-│   ├── canonical/
-│   │   ├── app.py
-│   │   ├── security.py
-│   │   └── verification.py
-│   ├── noncanonical/
-│   │   ├── old_version.py
-│   │   └── experiment.py
-│   ├── findings.txt
-│   └── manifest.txt
-│
-├── src/
-│   └── release_audit/
-│       ├── __init__.py
-│       ├── auditor.py
-│       ├── cli.py
-│       ├── findings.py
-│       ├── hash_utils.py
-│       ├── models.py
-│       └── parser.py
-│
-└── tests/
-    └── test_audit.py
-```
+    release-manifest-audit/
+    ├── src/
+    │   └── release_audit/
+    │       ├── auditor.py
+    │       ├── cli.py
+    │       ├── findings.py
+    │       ├── hash_utils.py
+    │       ├── models.py
+    │       └── parser.py
+    ├── tests/
+    │   └── test_audit.py
+    ├── data/
+    │   ├── canonical/
+    │   │   ├── app.py
+    │   │   ├── security.py
+    │   │   └── verification.py
+    │   ├── noncanonical/
+    │   │   ├── experiment.py
+    │   │   └── old_version.py
+    │   ├── findings.txt
+    │   └── manifest.txt
+    ├── .gitattributes
+    └── README.md
+
 ## Requirements
 
 - Python 3.10+
 - pytest
 
-The prototype uses only Python standard-library modules at runtime.
+Install pytest if required:
 
-## Setup
+    pip install pytest
 
-Clone the repository and move into the project directory:
+## Running the Audit
 
-    git clone https://github.com/AnandMNambiar/release-manifest-audit.git
-    cd release-manifest-audit
+From the project root:
 
-Install pytest:
+    PYTHONPATH=src python -m release_audit.cli --manifest data/manifest.txt --base-dir data --findings data/findings.txt
 
-    python -m pip install pytest
-
-Set the source directory on `PYTHONPATH`:
+On Windows PowerShell:
 
     $env:PYTHONPATH="src"
-## Run the Audit
-
-Run the prototype with:
-
     python -m release_audit.cli --manifest data/manifest.txt --base-dir data --findings data/findings.txt
 
-The audit reports the scope, entry type, verification status, and result for each manifest entry.
+The CLI prints the verification results, findings by scope, validation errors, and the final audit status.
 
-A successful verification means the referenced path exists, is a file, and its SHA3-512 hash matches the expected hash in the manifest.
+## Manifest Format
+
+The manifest contains entries in the following format:
+
+    SOURCE: path/to/file.py:sha3-512-hash
+    VERIFICATION: path/to/file.py:sha3-512-hash
+    EVIDENCE: path/to/file.py:sha3-512-hash
+
+### Entry Classification
+
+| Entry Type | Audit Scope |
+|---|---|
+| SOURCE | Canonical |
+| VERIFICATION | Canonical |
+| EVIDENCE | Noncanonical |
+
+Canonical entries represent the release verification scope.
+
+Evidence entries remain visible but are kept separate from the canonical release scope.
+
 ## Verification Logic
-
-Each manifest entry is checked independently.
 
 ### Empty Manifest
 
-An empty manifest is rejected because a release audit must contain at least one manifest entry.
-
-    [FAIL] ... | Manifest contains no entries
+An empty manifest is rejected.
 
 ### Path Traversal
 
-Manifest paths are resolved against the configured base directory.
+Manifest paths must remain inside the configured base directory.
 
-If a path resolves outside the base directory, the audit rejects it:
+Paths that resolve outside the base directory are rejected.
 
-    [FAIL] ... | File path escapes the base directory
+### Missing File
 
-This prevents manifest entries from referencing files outside the intended audit scope.
-
-### File Missing
-
-If a referenced file does not exist, the audit reports:
-
-    [FAIL] ... | File is missing
+If a manifest references a file that does not exist, verification fails.
 
 ### Path Is Not a File
 
-If a referenced path exists but points to a directory or another non-file path, the audit reports:
-
-    [FAIL] ... | Path is not a file
+If a referenced path exists but is a directory, verification fails.
 
 ### Conflicting Duplicate Entries
 
-If the manifest contains multiple entries for the same file with different entry types or different expected hashes, the conflicting entry is rejected:
+Equivalent paths are normalized before duplicate validation.
 
-    [FAIL] ... | Conflicting duplicate manifest entry
+For example:
 
-### Hash Mismatch
+    canonical/app.py
+    canonical/./app.py
 
-If the file exists and is a regular file but its SHA3-512 hash differs from the expected hash in the manifest:
+refer to the same logical path.
 
-    [FAIL] ... | SHA3-512 hash mismatch
+If duplicate entries for the same path contain conflicting entry types or hashes, the audit fails.
+
+### SHA3-512 Hash Verification
+
+Each manifest file is hashed using SHA3-512.
+
+The calculated hash must match the hash recorded in the manifest.
+
+A mismatch causes the audit to fail.
 
 ### Successful Verification
 
-If the referenced path exists, is a file, and its SHA3-512 hash matches:
+The manifest passes verification when all entries exist, are regular files, remain within the base directory, contain no conflicting duplicates, and their SHA3-512 hashes match their expected values.
 
-    [PASS] ... | File exists and SHA3-512 hash matches
-
-SHA3-512 verification is performed against the file's actual bytes.
 ## Audit Scopes
 
-For this prototype, the synthetic manifest convention is:
+The manifest determines the audit scope of each entry.
 
-- `SOURCE` → Canonical
-- `VERIFICATION` → Canonical
-- `EVIDENCE` → Noncanonical
+- SOURCE → Canonical
+- VERIFICATION → Canonical
+- EVIDENCE → Noncanonical
 
-Canonical and noncanonical findings are reported separately.
+Canonical and noncanonical results are kept separate throughout the audit.
 
-The auditor also checks that a finding's scope agrees with the scope assigned to the same file by the manifest.
-
-If a finding has a different scope from its corresponding manifest entry, it is reported as a scope error instead of being silently placed into the wrong audit scope.
-
-Findings from noncanonical files are therefore not presented as canonical-release findings.
 ## Findings
 
-Synthetic findings are supplied through `data/findings.txt`.
+Findings use the following format:
 
-Each finding uses the following format:
-
-    file_path|severity|message
+    file_path|scope|severity|message
 
 Example:
 
-    canonical/app.py|MEDIUM|Example canonical finding
-    noncanonical/experiment.py|LOW|Example noncanonical finding
+    canonical/app.py|canonical|MEDIUM|Example canonical finding
+    noncanonical/experiment.py|noncanonical|LOW|Example noncanonical finding
 
-The audit report separates findings into canonical and noncanonical scopes.
+The scope is explicitly declared in the findings file and is validated against the scope assigned by the manifest.
 
-A finding is also checked against the manifest entry for the same file. If the finding's declared scope conflicts with the manifest-defined scope, the finding is reported separately as a scope error rather than being included in either canonical or noncanonical findings.
+### Canonical Findings
+
+Findings associated with canonical manifest entries are reported separately.
+
+### Noncanonical Findings
+
+Findings associated with noncanonical manifest entries are reported separately.
+
+Noncanonical findings are never silently promoted into the canonical release scope.
+
+### Finding Scope Mismatch
+
+If a finding declares a scope that differs from the scope assigned to the same file by the manifest, it is reported as a finding scope error.
+
+The audit fails when a finding scope conflicts with the manifest scope.
+
+### Unmanifested Findings
+
+If a finding references a file that does not appear in the manifest, it is not accepted into either audit scope.
+
+It is reported as an unmanifested finding and causes the audit to fail.
+
+This prevents findings from introducing files into the audit scope without a corresponding manifest entry.
+
+## Audit Status
+
+The CLI reports:
+
+    AUDIT STATUS: PASSED
+
+only when:
+
+- all manifest entries pass verification;
+- there are no conflicting duplicate entries;
+- there are no finding scope errors;
+- there are no unmanifested findings.
+
+Otherwise it reports:
+
+    AUDIT STATUS: FAILED
+
+and returns a non-zero exit code.
+
 ## Tests
 
-Run the test suite with:
+The project currently contains 15 automated tests.
+
+Run them with:
 
     python -m pytest -q
 
-The test suite contains 10 tests covering:
+The test suite covers:
 
 - Manifest entry classification
-- Successful SHA3-512 verification
-- Missing file detection
-- Hash mismatch detection
-- Canonical and noncanonical finding separation
-- Findings-file parsing
-- Empty manifest rejection
-- Path traversal protection
-- Conflicting duplicate manifest detection
-- Directory used as a file detection
-- Finding scope mismatch detection
+- Successful manifest verification
+- Missing files
+- SHA3-512 hash mismatches
+- Canonical and noncanonical findings
+- Findings file parsing
+- Empty manifests
+- Path traversal
+- Conflicting duplicate entries
+- Equivalent duplicate paths
+- Directories used as files
+- Finding scope mismatches
+- CLI failure for finding scope mismatches
+- Unmanifested findings
+- CLI failure for unmanifested findings
 
-The tests verify both the expected successful audit path and the failure conditions identified in the audit requirements.
+Current result:
+
+    15 passed
+
 ## Design Notes
 
-This project is intentionally small and standalone.
+### Deterministic Verification
 
-The implementation is divided into focused components:
+The audit logic is deterministic and based on explicit manifest data, filesystem state, and SHA3-512 hashes.
 
-- `parser.py` — parses manifest entries
-- `models.py` — defines manifest entry and scope models
-- `hash_utils.py` — calculates and verifies SHA3-512 hashes
-- `auditor.py` — performs release auditing, validates paths and duplicates, and separates findings
-- `findings.py` — parses synthetic findings
-- `cli.py` — provides the command-line interface
+### Manifest as Scope Authority
 
-The manifest, source files, and findings are synthetic test data created specifically for this prototype.
+The manifest determines whether a referenced file belongs to the canonical or noncanonical audit scope.
 
-The prototype focuses on deterministic file verification and audit-scope separation without requiring an external service or LLM.
+Finding data cannot override the scope assigned by the manifest.
 
-The `.gitattributes` file configures Git to use LF line endings for Python and text files, helping keep the synthetic release data consistent across environments.
+### Findings Are Not Silently Discarded
+
+Findings that cannot be safely associated with the manifest are reported separately as validation errors rather than being silently ignored.
+
+### Safe Path Resolution
+
+Manifest paths are resolved against the configured base directory and checked to ensure they remain within that directory.
+
+### Synthetic Test Data
+
+The files under data/ are synthetic fixtures created specifically for testing the prototype.
+
+## Line Ending Consistency
+
+The repository uses LF line endings for source and test files.
+
+.gitattributes is included to help maintain consistent line endings across environments.
+
+This is important because changing CRLF/LF line endings changes file hashes and can therefore affect SHA3-512 verification.
