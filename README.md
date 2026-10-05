@@ -143,7 +143,7 @@ The tests cover:
 - Noncanonical finding separation
 - Findings-file parsing
 
-The current test suite contains six tests.
+The test suite contains six tests covering the core audit requirements
 ## Design Notes
 
 This project is intentionally small and standalone.
