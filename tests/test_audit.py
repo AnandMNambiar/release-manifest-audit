@@ -4,7 +4,7 @@ import sys
 
 from release_audit.auditor import ReleaseAuditor
 from release_audit.findings import Finding, parse_findings_file
-from release_audit.models import ManifestEntry, Scope
+from release_audit.models import EntryType, ManifestEntry, Scope
 from release_audit.parser import ManifestParser
 
 
@@ -315,3 +315,27 @@ def test_cli_reports_unmanifested_finding_and_fails(tmp_path):
     assert "Unmanifested findings:" in result.stdout
     assert "Finding refers to a file that is not present in the manifest" in result.stdout
     assert "AUDIT STATUS: FAILED" in result.stdout
+def test_dot_dot_duplicate_paths_fail(tmp_path):
+    original_entry = load_entries()[0]
+
+    first_entry = ManifestEntry(
+        entry_type=original_entry.entry_type,
+        file_path="canonical/app.py",
+        expected_hash=original_entry.expected_hash,
+    )
+
+    second_entry = ManifestEntry(
+        entry_type=EntryType.EVIDENCE,
+        file_path="canonical/sub/../app.py",
+        expected_hash=original_entry.expected_hash,
+    )
+
+    report = ReleaseAuditor(tmp_path).audit(
+        [first_entry, second_entry]
+    )
+
+    assert any(
+        result.status == "FAIL"
+        and result.message == "Conflicting duplicate manifest entry"
+        for result in report.results
+    )

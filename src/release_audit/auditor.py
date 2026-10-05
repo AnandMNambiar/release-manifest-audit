@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+import posixpath
 
 from .findings import Finding
 from .hash_utils import calculate_sha3_512
@@ -199,8 +200,8 @@ class ReleaseAuditor:
 
     @staticmethod
     def _normalize_path(file_path: str) -> str:
-        """Normalize path separators and equivalent relative path forms."""
+        """Normalize separators and resolve . and .. path components."""
 
         normalized = file_path.replace("\\", "/").strip()
 
-        return PurePosixPath(normalized).as_posix()
+        return posixpath.normpath(normalized)
